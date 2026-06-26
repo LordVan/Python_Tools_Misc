@@ -35,6 +35,11 @@ class FileProp:
         # call this when done with all matching
         self._match.sort()  # just keep it sorted on insert
         self._mismatch.sort()  # just keep it sorted on insert
+        if DEBUG:
+            print('matches:')
+            print(self._match)
+            print('mismatches:')
+            print(self._mismatch)
 
     def get_fname(self):
         return self._fname
@@ -45,7 +50,7 @@ class FileProp:
     def get_mismatches(self):
         return self._mismatch
 
-    def output_data(self, remove_string=None):
+    def output_data(self, remove_string=None, gen_diff = True):
         ret = '%s (%s):\n' % (self._fname, self._fullpath)
         if len(self._match) == 0:
             ret += '  Keine gleichen Dateien gefunden.\n'
@@ -66,7 +71,7 @@ class FileProp:
         else:
             return ret
 
-    def output_html(self, remove_string=None):
+    def output_html(self, gen_diff = True, remove_string=None):
         #ret = f'<div>\n<h2>{self._fname} ({self._fullpath}, {self._mimetype}):</h2>\n<a href="#index">Zum Index</a>'
         ret = f'<div>\n<h2>{self._fname} ({self._fullpath}):</h2>\n<a href="#index">Zum Index</a>'
         if len(self._match) == 0:
@@ -83,6 +88,9 @@ class FileProp:
         if len(self._mismatch) == 0:
             ret += '<p class="nomatch">Keine abweichenden Dateien gefunden.</p>\n'
         else:
+            diffDir = os.path.join(os.path.dirname(self._fullpath), 'diffs')
+            if gen_diff and not os.path.exists(diffDir):
+                os.makedirs(diffDir)
             ret += f'<p class="differ">Anzahl abweichender Dateien: {len(self._mismatch)}:\n<ul>\n'
             for folder in self._mismatch:
                 if remove_string:
@@ -99,16 +107,29 @@ class FileProp:
                 if ext and ext.lower() in ('dxf', 'stp', 'sat', 'step'):
                     print('comparing file contents..')
                     try:
-                        delta = list(difflib.unified_diff(open(folder, 'r').readlines(),
-                                                          open(self._fullpath, 'r').readlines(),
+                        old_lines = open(folder, 'r').readlines()
+                        new_lines = open(self._fullpath, 'r').readlines()
+                        delta = list(difflib.unified_diff(old_lines,
+                                                          new_lines,
                                                           fromfile=folder,
                                                           tofile=self._fullpath))
+                        if gen_diff:
+                            with(open(os.path.join(diffDir, self._fname + '.diff'), 'w', encoding='utf-8')) as diffFile:
+                                if DEBUG:
+                                    print(f'writing diff')
+                                diffFile.writelines(delta)
+                            with(open(os.path.join(diffDir, self._fname + '.diff.html'), 'w', encoding='utf-8')) as diffHtml:
+                                if DEBUG:
+                                    print(f'writing HTML diff (this can take a long time)')
+                                diffHtmlLines = list(difflib.HtmlDiff().make_file(old_lines, new_lines))
+                                diffHtml.writelines(diffHtmlLines)
+                        difflines = "<br />".join(delta[:30]) # the diff has been written to a file. now truncate it and add html linebreaks
+                        if len(delta) > 30:
+                            difflines += '<br />.....'
+                        ret += f' [<div class="tooltip">Abweichungen<span class="tooltiptext">{difflines}</span></div>]'
+
                     except Exception as e:
                         print('Error during diff: %s' % (e))
-                    difflines = "<br />".join(delta[:30])
-                    if len(delta) > 30:
-                        difflines += '<br />.....'
-                    ret += f' [<div class="tooltip">Abweichungen<span class="tooltiptext">{difflines}</span></div>]'
                 ret += f'(<a href="file:{pathname2url(os.path.dirname(folder))}">Order öffnen</a>)</li>\n'
             ret += '</ul>\n</p>\n'
         ret += '</div>\n<hr />\n'
@@ -180,20 +201,32 @@ class FileFindCompare:
                                                                        len(prop.get_matches()),
                                                                        len(prop.get_mismatches())))
 
-    def generate_output(self):
+    def generate_output(self, gen_diff = True):
         ret = ''
         for fname, prop in self._files.items():
-            ret += prop.output_data(remove_string=os.path.normpath(self._basedir))
+            ret += prop.output_data(os.path.normpath(self._basedir), gen_diff)
             ret += '\n'
+            # TODO: support textual Diff here
         return ret
 
-    def save_output(self):
-        with open(self._fout, 'w', encoding='utf-8') as outp:
-            outp.write(self.generate_output())
-        with open(self._fout.replace('.txt', '.html'), 'w', encoding='utf-8') as outphtml:
-            outphtml.write(self.generate_html())
+    def process(self, gen_text = True, gen_html = True, gen_diff = True, gen_html_diff = False):
+        self.find_compare()  # browse the directory structure and compare hashes
+        if gen_diff and not gen_html:
+            print('Error: Diffs currently only supported when generating HTML')
+            return -1
+        if gen_text:
+            with open(self._fout, 'w', encoding='utf-8') as outp:
+                outp.write(self.generate_output())
+        if gen_html:
+            with open(self._fout.replace('.txt', '.html'), 'w', encoding='utf-8') as outphtml:
+                outphtml.write(self.generate_html(gen_html_diff))
+        if not gen_text and not gen_html:
+            print('No output generated!!!')
+            return -1
+        return 0
 
-    def generate_html(self):
+
+    def generate_html(self, gen_diff = True):
         title = f'Dateivergleich {self._finBasedir}'
         ret = '''<html>
 <head>
@@ -242,7 +275,7 @@ class FileFindCompare:
 </div> 
 ''' % (title, title)
         for fname, prop in self._files.items():
-            ret += prop.output_html(remove_string=os.path.normpath(self._basedir))
+            ret += prop.output_html(gen_diff, os.path.normpath(self._basedir))
             ret += '\n'
         ret += '''
 <script>
@@ -266,7 +299,7 @@ indexHolder.innerHTML = indexHtml;//put the html in the #index div
 if __name__ == '__main__':
     #  for i in [0-9]*; do for j in $i/*; do echo $j;done ;done |grep -v DOKU|grep -v Thumbs > filelist.txt
     basedir = 'y:/Zeichnungen-Projekte/Wurmb/'
-    subdir = 'Bestellungen/Bestellungen 2025 - 2029/Bestellung --- 2025-02-03/'
+    subdir = 'Bestellungen/Bestellungen 2025 - 2029/Bestellungen 2026/Bestellung --- 2026-06-24'
     #basedir = 'y:/Zeichnungen-Projekte/BremTechnik/'
     #subdir = 'Bestellungen/Bestellungen 2023/Bestellung --- 2023-06-26'
     #basedir = 'Y:/Zeichnungen-Projekte/Dlouhy/'
@@ -274,8 +307,10 @@ if __name__ == '__main__':
     fin = os.path.join(basedir, subdir, 'filelist.txt')
     fout = os.path.join(basedir, subdir, 'filelist_output.txt')
     app = FileFindCompare(fin, fout, basedir)
-    app.find_compare()  # browse the directory structure and compare hashes
-    app.save_output()  # save the text file
+    app.process(gen_text = True,
+                gen_html = True,
+                gen_diff = True,
+                gen_html_diff = False)  # save the text and html files ## html diff is painfully slow
     # with open(fout, 'w', encoding='utf-8') as outp:
     #     outp.write(app.generate_output())
     # outp.close()

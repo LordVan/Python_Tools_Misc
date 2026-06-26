@@ -113,7 +113,7 @@ class PyFindFileCompare(QWidget):
         self.out_text.appendPlainText('Ausgabe als text:')
         self.out_text.appendPlainText(ffc.generate_output())
 
-        ffc.save_output()
+        ffc.process()
 
     def populate_tv(self):
         # TODO: populate the treeview
